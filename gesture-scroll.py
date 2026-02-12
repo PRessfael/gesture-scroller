@@ -15,29 +15,26 @@ mp_draw = mp.solutions.drawing_utils
 # Initialize Camera
 cap = cv2.VideoCapture(0)
 
-# Scroll sensitivity settings - hybrid mode
-scroll_amount_up_base = 18  # Base scroll up (see earlier content) - almost none
+# Scroll sensitivity settings
+scroll_amount_up_base = 500  # Base scroll up (see earlier content) - same as scroll down
 scroll_amount_down_base = 500  # Base scroll down (see later content)
 scroll_speed_multiplier = 5000  # Multiplier for speed-based scrolling
-swipe_threshold_finger_down = 0.39  # Finger moves down to scroll up (very hard to trigger)
+swipe_threshold_finger_down = 0.15  # Finger moves down to scroll up (less sensitive, requires more movement)
 swipe_threshold_finger_up = 0.04  # Finger moves up to scroll down (more sensitive)
 
-# Continuous mode settings
-continuous_sensitivity_up = 200  # Continuous scrolling sensitivity for up (very low)
-continuous_sensitivity_down = 53  # Continuous scrolling sensitivity for down (almost none)
-slow_movement_threshold = 0.01  # If movement per frame is below this, it's "slow"
-slow_movement_threshold_down = 0.0005  # Extremely slow required for continuous down (almost impossible)
-deadzone = 0.003  # Minimum movement for continuous mode
-
 # Variables to track gesture state
-gesture_start_y = None
+gesture_start_y = None  # For index finger
 gesture_start_frame = 0
+middle_gesture_start_y = None  # For middle finger
+middle_gesture_start_frame = 0
 current_frame = 0
 gesture_in_progress = False
+middle_gesture_in_progress = False
 cooldown_frames = 0
+middle_cooldown_frames = 0
 cooldown_duration = 10  # Frames to wait before detecting next gesture
 previous_hand_y = None
-continuous_mode = False
+previous_middle_finger_y = None
 
 # Function to detect if hand is making a fist
 def is_fist(hand_landmarks):
@@ -84,7 +81,7 @@ while True:
     h, w, c = img.shape
     
     # Add instructions on screen
-    cv2.putText(img, "Move INDEX FINGER up/down to scroll", (10, 30), 
+    cv2.putText(img, "INDEX: swipe scroll | MIDDLE: swipe scroll up", (10, 30), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     
     # Decrease cooldown counter
@@ -92,21 +89,71 @@ while True:
         cooldown_frames -= 1
         cv2.putText(img, "Cooldown...", (10, 70), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+    
+    if middle_cooldown_frames > 0:
+        middle_cooldown_frames -= 1
+        cv2.putText(img, "Middle Cooldown...", (10, 100), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
 
     if results.multi_hand_landmarks:
         for hand_landmarks in results.multi_hand_landmarks:
             # Draw hand landmarks on the camera feed
             mp_draw.draw_landmarks(img, hand_landmarks, mp_hands.HAND_CONNECTIONS)
             
-            # Get the y-coordinate of the index finger tip (Landmark 8)
+            # Get the y-coordinate of the index finger tip (Landmark 8) for discrete scroll
             current_hand_y = hand_landmarks.landmark[8].y
             
-            # Highlight the index finger tip being tracked
-            finger_tip = hand_landmarks.landmark[8]
-            cx, cy = int(finger_tip.x * w), int(finger_tip.y * h)
-            cv2.circle(img, (cx, cy), 15, (0, 255, 255), -1)  # Yellow circle on finger tip
+            # Get the y-coordinate of the middle finger tip (Landmark 12) for discrete scroll up
+            current_middle_finger_y = hand_landmarks.landmark[12].y
             
-            # Only process gestures if not in cooldown
+            # Highlight the index finger tip being tracked
+            index_finger_tip = hand_landmarks.landmark[8]
+            ix, iy = int(index_finger_tip.x * w), int(index_finger_tip.y * h)
+            cv2.circle(img, (ix, iy), 15, (0, 255, 255), -1)  # Yellow circle on index finger
+            
+            # Highlight the middle finger tip being tracked
+            middle_finger_tip = hand_landmarks.landmark[12]
+            mx, my = int(middle_finger_tip.x * w), int(middle_finger_tip.y * h)
+            cv2.circle(img, (mx, my), 15, (0, 255, 0), -1)  # Green circle on middle finger
+            
+            # MIDDLE FINGER: Discrete swipe scroll up (same as scroll down values)
+            if middle_cooldown_frames == 0:
+                # Start tracking middle finger gesture
+                if middle_gesture_start_y is None:
+                    middle_gesture_start_y = current_middle_finger_y
+                    middle_gesture_start_frame = current_frame
+                    previous_middle_finger_y = current_middle_finger_y
+                    middle_gesture_in_progress = True
+                    cv2.putText(img, "Middle ready", (10, 100), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                
+                # Check if middle finger moved down to scroll up
+                elif middle_gesture_in_progress:
+                    middle_delta_y = current_middle_finger_y - middle_gesture_start_y
+                    
+                    # Calculate swipe speed
+                    middle_frames_elapsed = current_frame - middle_gesture_start_frame
+                    middle_swipe_speed = abs(middle_delta_y) / max(middle_frames_elapsed, 1)
+                    
+                    # Middle finger moved down - scroll up (same values as scroll down)
+                    if middle_delta_y > swipe_threshold_finger_down:
+                        scroll_amount = int(scroll_amount_down_base + (middle_swipe_speed * scroll_speed_multiplier))
+                        pyautogui.scroll(scroll_amount)
+                        cv2.putText(img, f"MIDDLE SCROLL UP: {scroll_amount} (speed: {middle_swipe_speed:.3f})", (10, 100), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        middle_gesture_start_y = None
+                        middle_gesture_in_progress = False
+                        previous_middle_finger_y = None
+                        middle_cooldown_frames = cooldown_duration
+                    
+                    # Still tracking middle finger gesture
+                    else:
+                        cv2.putText(img, f"Middle track... d:{middle_delta_y:.3f}", (10, 100), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                    
+                    previous_middle_finger_y = current_middle_finger_y
+            
+            # INDEX FINGER: Discrete swipe scrolling (only if not in cooldown)
             if cooldown_frames == 0:
                 # Start tracking a new gesture
                 if gesture_start_y is None:
@@ -114,81 +161,45 @@ while True:
                     gesture_start_frame = current_frame
                     previous_hand_y = current_hand_y
                     gesture_in_progress = True
-                    continuous_mode = False
                     cv2.putText(img, "Ready to swipe", (10, 70), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
                 
                 # Check if gesture has moved enough to trigger scroll
                 elif gesture_in_progress:
                     delta_y = current_hand_y - gesture_start_y
-                    frame_delta = abs(current_hand_y - previous_hand_y) if previous_hand_y else 0
                     
                     # Calculate swipe speed (distance per frame)
                     frames_elapsed = current_frame - gesture_start_frame
                     swipe_speed = abs(delta_y) / max(frames_elapsed, 1)
                     
-                    # Determine if movement is slow (different thresholds for up/down)
-                    is_slow_movement_up = frame_delta < slow_movement_threshold and frame_delta > deadzone and delta_y < 0
-                    is_slow_movement_down = frame_delta < slow_movement_threshold_down and frame_delta > deadzone and delta_y > 0
-                    is_slow_movement = is_slow_movement_up or is_slow_movement_down
+                    # Index finger moved down - scroll up (speed-based)
+                    if delta_y > swipe_threshold_finger_down:
+                        # Calculate scroll amount based on speed
+                        scroll_amount = int(scroll_amount_up_base + (swipe_speed * scroll_speed_multiplier))
+                        pyautogui.scroll(scroll_amount)
+                        cv2.putText(img, f"SCROLL UP: {scroll_amount} (speed: {swipe_speed:.3f})", (10, 70), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        gesture_start_y = None
+                        gesture_in_progress = False
+                        previous_hand_y = None
+                        cooldown_frames = cooldown_duration
                     
-                    # If not in continuous mode yet, check for discrete swipe thresholds
-                    if not continuous_mode:
-                        # Finger moved down - scroll up (speed-based)
-                        if delta_y > swipe_threshold_finger_down:
-                            # Calculate scroll amount based on speed
-                            scroll_amount = int(scroll_amount_up_base + (swipe_speed * scroll_speed_multiplier))
-                            pyautogui.scroll(scroll_amount)
-                            cv2.putText(img, f"SCROLL UP: {scroll_amount} (speed: {swipe_speed:.3f})", (10, 70), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                            gesture_start_y = None
-                            gesture_in_progress = False
-                            previous_hand_y = None
-                            cooldown_frames = cooldown_duration
-                        
-                        # Finger moved up - scroll down (speed-based)
-                        elif delta_y < -swipe_threshold_finger_up:
-                            # Calculate scroll amount based on speed
-                            scroll_amount = int(scroll_amount_down_base + (swipe_speed * scroll_speed_multiplier))
-                            pyautogui.scroll(-scroll_amount)
-                            cv2.putText(img, f"SCROLL DOWN: {scroll_amount} (speed: {swipe_speed:.3f})", (10, 70), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                            gesture_start_y = None
-                            gesture_in_progress = False
-                            previous_hand_y = None
-                            cooldown_frames = cooldown_duration
-                        
-                        # Activate continuous mode if moving slowly and past threshold
-                        elif is_slow_movement and (abs(delta_y) > swipe_threshold_finger_down or abs(delta_y) > swipe_threshold_finger_up):
-                            continuous_mode = True
-                            cv2.putText(img, "Continuous mode ON (slow movement)", (10, 70), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-                        
-                        # Still tracking gesture
-                        else:
-                            cv2.putText(img, f"Track... d:{delta_y:.3f} spd:{swipe_speed:.3f}", (10, 70), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                    # Index finger moved up - scroll down (speed-based)
+                    elif delta_y < -swipe_threshold_finger_up:
+                        # Calculate scroll amount based on speed
+                        scroll_amount = int(scroll_amount_down_base + (swipe_speed * scroll_speed_multiplier))
+                        pyautogui.scroll(-scroll_amount)
+                        cv2.putText(img, f"SCROLL DOWN: {scroll_amount} (speed: {swipe_speed:.3f})", (10, 70), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                        gesture_start_y = None
+                        gesture_in_progress = False
+                        previous_hand_y = None
+                        cooldown_frames = cooldown_duration
                     
-                    # Continuous mode active - scroll based on finger movement
+                    # Still tracking gesture
                     else:
-                        if frame_delta > deadzone:
-                            current_delta = current_hand_y - previous_hand_y
-                            
-                            # Finger moving down = scroll up
-                            if current_delta > 0:
-                                scroll_amount = int(current_delta * continuous_sensitivity_up)
-                                pyautogui.scroll(scroll_amount)
-                                cv2.putText(img, f"Continuous UP: {scroll_amount}", (10, 70), 
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                            # Finger moving up = scroll down
-                            elif current_delta < 0:
-                                scroll_amount = int(current_delta * continuous_sensitivity_down)
-                                pyautogui.scroll(scroll_amount)
-                                cv2.putText(img, f"Continuous DOWN: {scroll_amount}", (10, 70), 
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                        else:
-                            cv2.putText(img, "Continuous - Stable", (10, 70), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
+                        cv2.putText(img, f"Track... d:{delta_y:.3f} spd:{swipe_speed:.3f}", (10, 70), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
                     
                     previous_hand_y = current_hand_y
             
@@ -198,7 +209,9 @@ while True:
         gesture_start_y = None
         gesture_in_progress = False
         previous_hand_y = None
-        continuous_mode = False
+        middle_gesture_start_y = None
+        middle_gesture_in_progress = False
+        previous_middle_finger_y = None
         cv2.putText(img, "No hand detected", (10, 70), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
